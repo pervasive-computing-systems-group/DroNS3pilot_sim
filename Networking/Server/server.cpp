@@ -15,6 +15,12 @@
 #include <netdb.h>
 #include <stdio.h>
 
+#include <chrono>
+#include <thread>
+#include <cstdlib>
+#include <csignal>
+#include <string>
+
 #include "defines.h"
 
 // Number of pending connections to queue
@@ -22,7 +28,68 @@
 
 #define DEFAULT_BYTE_TO_SEND 1000000
 
+void send_data(int nClientSocket, int byte_to_send, char* data) {
+	// Set read timeout
+	struct timeval tv;
+	tv.tv_sec = 1;
+	tv.tv_usec = 0;
+	setsockopt(nClientSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+
+	packet_t recPack;
+
+	// Read from server
+	int nBytesRead = read(nClientSocket, &recPack, sizeof(packet_t));
+
+	// Verify data was read
+	if(nBytesRead == -1) {
+		// Failed to read, close socket and end child process
+		fprintf(stderr,"ERROR: did not read client hello message\n");
+
+		close(nClientSocket);
+		return;
+	}
+	else {
+		// We successfully received a client message
+		printf(" packet ID: %d, type: %d\n", recPack.id, recPack.msg_type);
+
+		// Send acknowledgment packet back to client
+		packet_t sendPack;
+		sendPack.id = (recPack.id  + 1);
+		sendPack.msg_type = RESPONSE;
+		sendPack.bytes_to_send = byte_to_send;
+
+		// Send message
+		if(send(nClientSocket , &sendPack, sizeof(packet_t), 0) == -1) {
+			fprintf(stderr,"ERROR: failed to send acknowledgment message to client\n");
+		}
+		else {
+			debugPrint("Message acknowledgment\nSending Data");
+
+			// Send the rest of the data...
+			int bytes_sent_total = 0;
+			while(bytes_sent_total < byte_to_send) {
+				int bytes_sent = send(nClientSocket , data+bytes_sent_total, byte_to_send - bytes_sent_total, MSG_NOSIGNAL);
+				// Did we actually send something?
+				if(bytes_sent <= 0) {
+					fprintf(stderr,"ERROR: data packet failed to send to client\n");
+					close(nClientSocket);
+					return;
+				}
+				else {
+					bytes_sent_total += bytes_sent;
+					printf(" sent data packet : %d\n", bytes_sent);
+				}
+			}
+			printf("Sent %d bytes\n", bytes_sent_total);
+		}
+	}
+
+	debugPrint("Client handled!");
+	close(nClientSocket);
+}
+
 int main(int arg, char const *argv[]) {
+//	signal(SIGPIPE, SIG_IGN);
 	int nListeningSock, nRVal, nReuse = 1;
 
 	struct addrinfo tConfigAddr, *tAddrSet, *tAddrInfo;
@@ -112,6 +179,7 @@ int main(int arg, char const *argv[]) {
 
 		// Wait for incoming connection requests
 		nClientSocket = accept(nListeningSock, (struct sockaddr *)&tClientAddr, &tpClientAddrSize);
+		debugPrint("Received request");
 
 		// Verify we connected
 		if(nClientSocket == -1) {
@@ -119,48 +187,8 @@ int main(int arg, char const *argv[]) {
 			continue;
 		}
 
-		packet_t recPack;
-
-		// Read from server
-		int nBytesRead = read(nClientSocket, &recPack, sizeof(packet_t));
-
-		// Verify data was read
-		if(nBytesRead == -1) {
-			// Failed to read, close socket and end child process
-			fprintf(stderr,"ERROR: did not read client hello message\n");
-
-			close(nClientSocket);
-			continue;
-		}
-		else {
-			// We successfully received a client message
-			printf("Received request\n packet ID: %d, type: %d\n", recPack.id, recPack.msg_type);
-
-			// Send acknowledgment packet back to client
-			packet_t sendPack;
-			sendPack.id = (recPack.id  + 1);
-			sendPack.msg_type = RESPONSE;
-			sendPack.bytes_to_send = byte_to_send;
-
-			// Send message
-			if(send(nClientSocket , &sendPack, sizeof(packet_t), 0) == -1) {
-				fprintf(stderr,"ERROR: failed to send acknowledgment message to client\n");
-			}
-			else {
-				debugPrint("Message acknowledgment\nSending Data");
-
-				// Send the rest of the data...
-				int bytes_sent = 0;
-				while(bytes_sent < byte_to_send) {
-					bytes_sent += send(nClientSocket , data+bytes_sent, byte_to_send - bytes_sent, 0);
-					debugPrint(" sent data packet");
-				}
-				printf("Sent %d bytes\n", bytes_sent);
-			}
-		}
-
-		debugPrint("Client handled!");
-		close(nClientSocket);
+		std::thread thrd(send_data, nClientSocket, byte_to_send, data);
+		thrd.detach();
 	}
 
 	return 0;

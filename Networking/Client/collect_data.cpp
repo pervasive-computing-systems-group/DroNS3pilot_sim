@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <netdb.h>
 #include <stdio.h>
+#include <netinet/tcp.h>
 
 #include "defines.h"
 
@@ -69,6 +70,15 @@ int main(int argc, char** argv) {
 	while(tAddrInfo != NULL) {
 		// Create socket
 		nSock = socket(tAddrInfo->ai_family, tAddrInfo->ai_socktype, tAddrInfo->ai_protocol);
+		// Set retry limit
+		int synRetries = 1; // Send a total of synRetries + 1 SYN packets
+		setsockopt(nSock, IPPROTO_TCP, TCP_SYNCNT, &synRetries, sizeof(synRetries));
+		// Set read timeout
+		struct timeval tv;
+		tv.tv_sec = 1;
+		tv.tv_usec = 0;
+		setsockopt(nSock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+
 		if(nSock == -1) {
 			debugPrint("Trying to connect to socket");
 			tAddrInfo = tAddrInfo->ai_next;
@@ -105,7 +115,11 @@ int main(int argc, char** argv) {
 	sendPack.msg_type = REQUEST;
 
 	// Send message
-	send(nSock , &sendPack, sizeof(packet_t), 0);
+	int rec_bytes = send(nSock , &sendPack, sizeof(packet_t), 0);
+	if(rec_bytes <= 0) {
+		fprintf(stderr,"ERROR: data request packet failed\n");
+		exit(1);
+	}
 	debugPrint("Message sent");
 
 	packet_t recPack;
@@ -115,13 +129,16 @@ int main(int argc, char** argv) {
 
 	// Verify data was read
 	if(nBytesRead == -1) {
-		if(DEBUG)
-			fprintf(stderr,"ERROR: did not receive data socket\n");
+		fprintf(stderr,"ERROR: did not receive data request response\n");
+		exit(1);
+	}
+	else if(recPack.msg_type != E_MessageType::RESPONSE) {
+		fprintf(stderr,"ERROR: bad data request response\n");
 		exit(1);
 	}
 	else {
 		// We successfully received a client message
-		printf("Received response\n packet ID: %d, type: %d\nSize of data to collect: %d\n", recPack.id, recPack.msg_type, recPack.bytes_to_send);
+		printf("Received response\n packet ID: %d, type: %d\n Size of data to collect: %d\n", recPack.id, recPack.msg_type, recPack.bytes_to_send);
 
 		// Create a data structure to hold the data
 		char* data = new char[recPack.bytes_to_send];
@@ -131,16 +148,26 @@ int main(int argc, char** argv) {
 		auto start = Time::now();
 
 		// Send the rest of the data...
-		int bytes_read = 0;
-		while(bytes_read < recPack.bytes_to_send) {
-			bytes_read += read(nSock, data + bytes_read, recPack.bytes_to_send - bytes_read);
-			debugPrint(" read data packet");
+		int bytes_read_total = 0;
+		while(bytes_read_total < recPack.bytes_to_send) {
+			int bytes_read = read(nSock, data + bytes_read_total, recPack.bytes_to_send - bytes_read_total);
+			if(bytes_read <= 0) {
+				break;
+			}
+			else {
+				bytes_read_total += bytes_read;
+				debugPrint(" read data packet");
+			}
 		}
 		// End timer
 		auto end = Time::now();
 
-		printf("Read %d bytes\n", bytes_read);
-		debugPrint(data);
+		printf("Read %d bytes\n", bytes_read_total);
+		if(bytes_read_total < recPack.bytes_to_send) {
+			fprintf(stderr,"ERROR: connection failed during data transfer\n");
+			exit(1);
+		}
+		//debugPrint(data);
 
 		// Are we logging TX data?
 		if(print_tx_data) {
@@ -154,7 +181,7 @@ int main(int argc, char** argv) {
 			debugPrint("Printing TX data\n");
 			pOutputFile = fopen("tx_data.dat", "a");
 			// File format: n m runmun computed_Z estimated_Z comp-time
-			fprintf(pOutputFile, "%s %f %d %ld\n", hostname, dist, bytes_read, d.count());
+			fprintf(pOutputFile, "%s %f %d %ld\n", hostname, dist, bytes_read_total, d.count());
 			fclose(pOutputFile);
 		}
 
