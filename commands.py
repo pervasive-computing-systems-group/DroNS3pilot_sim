@@ -186,6 +186,7 @@ class MoveToWaypoint(Command): #used to be WaypointDist
 		self.north = north
 		self.up = up
 		self.vehicle = passed_vehicle
+		self.tolerance = tolerance
 		self.debug = debug
 
 	def begin(self):
@@ -206,7 +207,38 @@ class MoveToWaypoint(Command): #used to be WaypointDist
 			(self.vehicle.location.local_frame.north - self.north) ** 2 + 
 			(self.vehicle.location.local_frame.east - self.east) ** 2 + 
 			(self.vehicle.location.local_frame.down + self.up) ** 2))
-		return target_dist < 0.5
+		return target_dist < self.tolerance
+
+'''
+A waypoint with high-tolerance. The command ends once the drone is within 3 meters of the waypoint. The high-tolerance allows the drone to change direction and pursue the next waypoint without stopping. If now follow-on command is sent, then the drone will stop at the given position.
+'''
+class PassWaypoint(Command):
+	def __init__(self, east, north, up, passed_vehicle, debug = False):
+		self.east = east
+		self.north = north
+		self.up = up
+		self.vehicle = passed_vehicle
+		self.debug = debug
+
+	def begin(self):
+		self.cost = self.distance_finder()
+		self.vehicle.mode = VehicleMode('GUIDED')
+		if self.debug:
+			print("Moving to " + str(self.east) + ", " + str(self.north) + ", " + str(self.up))
+		goto_position_target_local_enu(self.east, self.north, self.up, self.vehicle)
+
+	def distance_finder(self):
+		return abs(math.sqrt(
+					(self.vehicle.location.local_frame.north - self.north) ** 2 + 
+					(self.vehicle.location.local_frame.east - self.east) ** 2 + 
+					(self.vehicle.location.local_frame.down) ** 2))
+	
+	def is_done(self):
+		target_dist = abs(math.sqrt(
+			(self.vehicle.location.local_frame.north - self.north) ** 2 + 
+			(self.vehicle.location.local_frame.east - self.east) ** 2 + 
+			(self.vehicle.location.local_frame.down + self.up) ** 2))
+		return target_dist < 7.5
 
 #TODO: More accurate commenting and naming. This should be similar to the previous one, 
 # just based off of time instead of a tolerance. Probably not the most useful.
